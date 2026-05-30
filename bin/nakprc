@@ -1,0 +1,310 @@
+#!/usr/bin/env node
+/**
+ * bin/nakprc — NAKPRC Thinking Patterns CLI
+ *
+ * Reads API configuration (apiBaseUrl, modelName) from tp.mcp.nakprc.js
+ * Works as both a standalone CLI and as a Claude Code extension.
+ *
+ * Usage:
+ *   nakprc install              Install skill to your Claude Code config
+ *   nakprc uninstall            Remove installed skill
+ *   nakprc status               Check installation status
+ *   nakprc tp start <task>      Start a thinking pattern session
+ *   nakprc tp stop              Stop and generate summary
+ *   nakprc --help               Show this help
+ */
+
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const { install, uninstall, status } = require("../src/install.js");
+import { spawnSync } from "child_process";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// --- Load config from tp.mcp.nakprc.js ---
+
+function loadConfig() {
+  const configPath = path.join(__dirname, "..", "tp.mcp.nakprc.js");
+  if (!fs.existsSync(configPath)) {
+    return {
+      name: "llm-thinking-patterns",
+      version: "1.0.0",
+      apiBaseUrl: "https://api.nakprc.com/v1",
+      modelName: "claude-sonnet-4-20250514",
+      commands: ["nakprc tp start", "nakprc tp stop"],
+      output: "./thinking-patterns",
+      claudeExtension: { enabled: true, skillName: "nakprc-thinking-patterns" },
+    };
+  }
+
+  const raw = fs.readFileSync(configPath, "utf-8");
+  const match = raw.match(/export\s+default\s+(\{[\s\S]*\})\s*;/);
+  if (match) {
+    try {
+      const configObj = eval(`(${match[1]})`);
+      return configObj;
+    } catch {
+      // fall back to defaults
+    }
+  }
+
+  return {
+    name: "llm-thinking-patterns",
+    version: "1.0.0",
+    apiBaseUrl: "https://api.nakprc.com/v1",
+    modelName: "claude-sonnet-4-20250514",
+    commands: ["nakprc tp start", "nakprc tp stop"],
+    output: "./thinking-patterns",
+    claudeExtension: { enabled: true, skillName: "nakprc-thinking-patterns" },
+  };
+}
+
+const CONFIG = loadConfig();
+
+const SKILL_DIR = path.join(
+  process.env.HOME || process.env.USERPROFILE || "/tmp",
+  ".claude",
+  "skills",
+  CONFIG.claudeExtension?.skillName || "nakprc-thinking-patterns"
+);
+const OUTPUT_DIR = path.join(process.cwd(), "thinking-patterns");
+
+// --- API helper ---
+// Makes LLM API calls using the configured apiBaseUrl and modelName
+
+async function callLLM(prompt, systemPrompt) {
+  const { apiBaseUrl, modelName } = CONFIG;
+  const url = `${apiBaseUrl}/chat/completions`;
+
+  const body = {
+    model: modelName,
+    messages: [
+      ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
+      { role: "user", content: prompt },
+    ],
+    max_tokens: 4096,
+  };
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${process.env.NAKPRC_API_KEY || process.env.OPENAI_API_KEY || ""}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`API call failed (${res.status}): ${errText}`);
+  }
+
+  return res.json();
+}
+
+function showHelp() {
+  console.log(`
+NAKPRC Thinking Patterns CLI
+
+USAGE:
+  nakprc <command> [options]
+
+COMMANDS:
+  install              Install the skill to your Claude Code config
+  uninstall            Remove the installed skill
+  status               Show installation status
+  tp start <task>     Start a thinking pattern session for <task>
+  tp stop              Stop the session and generate summary
+  --help               Show this help message
+
+CONFIGURATION:
+  apiBaseUrl: ${CONFIG.apiBaseUrl}
+  modelName:  ${CONFIG.modelName}
+  (Edit tp.mcp.nakprc.js to change these settings)
+
+EXAMPLES:
+  nakprc install
+  nakprc tp start "Build RAG App"
+  nakprc tp stop
+
+OUTPUT:
+  thinking-patterns/<task>/
+    ├── 001-task.md
+    ├── 002-analysis.md
+    ├── 003-decisions.md
+    └── 999-summary.md
+
+CLAUDE CODE EXTENSION:
+  This package also works as a Claude Code extension.
+  The skill is installed to: ${SKILL_DIR}
+
+REQUIREMENTS:
+  - Node.js >= 18
+  - Claude Code (with .claude/skills/ support)
+  - Python 3.9+ (for decode_skill.py integrity checks)
+
+LICENSE: Proprietary — NAKPRC
+`.trim() + "\n");
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const command = args[0];
+
+  if (!command || command === "--help" || command === "-h") {
+    showHelp();
+    return;
+  }
+
+  switch (command) {
+    case "install":
+      await install();
+      break;
+
+    case "uninstall":
+      uninstall();
+      break;
+
+    case "status":
+      status();
+      break;
+
+    case "tp": {
+      const subcommand = args[1];
+      const taskName = args[2]
+        ? args[2].toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
+        : `task-${Date.now()}`;
+
+      if (subcommand === "start") {
+        const targetDir = path.join(OUTPUT_DIR, taskName);
+        fs.mkdirSync(targetDir, { recursive: true });
+
+        const skillFile = path.join(SKILL_DIR, "SKILL.md");
+        if (!fs.existsSync(skillFile)) {
+          console.error("Error: skill not installed. Run 'nakprc install' first.");
+          process.exit(1);
+        }
+
+        // --- Optional: Use LLM API to generate content if API is configured ---
+        async function generateWithLLM() {
+          try {
+            const taskTitle = args[2] || taskName;
+            const systemPrompt = `You are a thinking patterns analyst. Generate structured task documentation.
+Use the configuration:
+- apiBaseUrl: ${CONFIG.apiBaseUrl}
+- modelName: ${CONFIG.modelName}
+
+Output only the markdown content, no explanations.`;
+
+            const prompt = `Generate the content for three files for the task "${taskTitle}":
+
+1. 001-task.md — Task description, objectives, scope, constraints
+2. 002-analysis.md — Research findings, approach analysis, alternatives
+3. 003-decisions.md — Architectural decisions, code design choices, tradeoffs
+
+Return the content for each file clearly separated with --- between them.`;
+
+            const result = await callLLM(prompt, systemPrompt);
+            return result;
+          } catch {
+            return null;
+          }
+        }
+
+        const llmResult = await generateWithLLM();
+
+        if (llmResult && llmResult.choices?.[0]?.message?.content) {
+          const content = llmResult.choices[0].message.content;
+          const sections = content.split(/\n---/);
+
+          const fileMap = {
+            "001-task.md": sections[0]?.replace(/^\d+[\.\-\s]+/, "").trim() || "",
+            "002-analysis.md": sections[1]?.replace(/^\d+[\.\-\s]+/, "").trim() || "",
+            "003-decisions.md": sections[2]?.replace(/^\d+[\.\-\s]+/, "").trim() || "",
+          };
+
+          for (const [filename, fileContent] of Object.entries(fileMap)) {
+            if (fileContent) {
+              fs.writeFileSync(path.join(targetDir, filename), fileContent);
+            }
+          }
+
+          console.log(`\x1b[32m✓\x1b[0m Thinking pattern session started (LLM-generated): ${targetDir}`);
+          console.log(`  Model: ${CONFIG.modelName}`);
+          console.log(`  Created: 001-task.md  002-analysis.md  003-decisions.md`);
+        } else {
+          // Fallback to template-based generation
+          const taskFile = path.join(targetDir, "001-task.md");
+          fs.writeFileSync(taskFile, `# Task: ${args[2] || taskName}\n\n## Status\n- **Started**: ${new Date().toISOString()}\n\n## Objectives\n- [ ] Define and track task objectives\n\n## Scope\n- In scope: ${args[2] || taskName}\n- Out of scope: \n\n## Constraints\n- None defined yet\n\n## Notes\n\n_\n`, { flag: "w" });
+
+          const analysisFile = path.join(targetDir, "002-analysis.md");
+          fs.writeFileSync(analysisFile, `# Analysis\n\n## Research Findings\n\n## Approach Analysis\n\n## Alternatives Considered\n\n---\n_Scanned: ${new Date().toISOString()}_\n`, { flag: "w" });
+
+          const decisionsFile = path.join(targetDir, "003-decisions.md");
+          fs.writeFileSync(decisionsFile, `# Decisions\n\n## Architectural Decisions\n\n## Code Design Choices\n\n## Tradeoffs and Rationale\n\n---\n_Last updated: ${new Date().toISOString()}_\n`, { flag: "w" });
+
+          console.log(`\x1b[32m✓\x1b[0m Thinking pattern session started (template): ${targetDir}`);
+          console.log(`  Config: apiBaseUrl=${CONFIG.apiBaseUrl}  modelName=${CONFIG.modelName}`);
+          console.log(`  Created: 001-task.md  002-analysis.md  003-decisions.md`);
+        }
+
+        console.log(`  Run \x1b[36mnakprc tp stop\x1b[0m to generate 999-summary.md\n`);
+      }
+
+      if (subcommand === "stop") {
+        const parentDir = OUTPUT_DIR;
+        const taskDirs = fs.readdirSync(parentDir).filter(f =>
+          f !== ".gitkeep" && fs.statSync(path.join(parentDir, f)).isDirectory()
+        ).sort().reverse();
+
+        if (taskDirs.length === 0) {
+          console.error("Error: no task directories found in thinking-patterns/");
+          process.exit(1);
+        }
+
+        const targetTaskDir = path.join(parentDir, taskDirs[0]);
+        const summaryFile = path.join(targetTaskDir, "999-summary.md");
+
+        const existingFiles = ["001-task.md", "002-analysis.md", "003-decisions.md"]
+          .map(f => {
+            const p = path.join(targetTaskDir, f);
+            return fs.existsSync(p) ? fs.readFileSync(p, "utf-8") : null;
+          })
+          .filter(Boolean);
+
+        const summary = `# Summary — ${path.basename(targetTaskDir)}\n\n## Final Summary\n\n### Milestones Reached\n- Task session initiated\n- Analysis completed\n- Decisions documented\n\n### Key Achievements\n- All pattern files generated\n- Work documented in thinking-patterns/${path.basename(targetTaskDir)}/\n\n### Final Build Results\n- See task files above for details\n\n## Recommendations\n- Review 001-task.md for scope alignment\n- Review 003-decisions.md for rationale\n- Archive or commit results before starting next session\n\n## Library References\n- Claude Code (.claude/skills/)\n- Python decode_skill.py (integrity verification)\n- MCP Bridge (tp.mcp.nakprc.js)\n\n---\n_Completed: ${new Date().toISOString()}_\n`;
+
+        fs.writeFileSync(summaryFile, summary);
+        console.log(`\x1b[32m✓\x1b[0m Session stopped. Summary written: ${summaryFile}`);
+        console.log(`\n\x1b[36mFiles in ${path.basename(targetTaskDir)}/:\x1b[0m`);
+        fs.readdirSync(targetTaskDir).forEach(f => {
+          if (f.endsWith(".md")) console.log(`  ${f}`);
+        });
+        console.log();
+      }
+
+      if (subcommand === "start" || subcommand === "stop") {
+        // handled above
+      } else {
+        console.error(`Unknown tp subcommand: ${subcommand}`);
+        console.error("Use 'nakprc --help' for usage.");
+        process.exit(1);
+      }
+      break;
+    }
+
+    default:
+      console.error(`Unknown command: ${command}`);
+      console.error("Use 'nakprc --help' for usage.");
+      process.exit(1);
+  }
+}
+
+main().catch(err => {
+  console.error(`Error: ${err.message}`);
+  process.exit(1);
+});

@@ -1,0 +1,4 @@
+node_modules/
+thinking-patterns/*/
+*.log
+.DS_Store

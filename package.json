@@ -1,0 +1,53 @@
+{
+  "name": "llm-thinking-patterns",
+  "version": "1.0.0",
+  "description": "Structured task analysis and documentation with LLM API integration — works as CLI and Claude Code extension",
+  "main": "src/install.js",
+  "bin": {
+    "nakprc": "./bin/nakprc"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/install.js",
+    "./config": "./tp.mcp.nakprc.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "tp.mcp.nakprc.js"
+  ],
+  "scripts": {
+    "install:local": "node bin/nakprc install",
+    "uninstall": "node bin/nakprc uninstall",
+    "test": "node test/install.test.js"
+  },
+  "keywords": [
+    "claude-code",
+    "claude-extension",
+    "skill",
+    "thinking-patterns",
+    "task-analysis",
+    "documentation",
+    "llm-api",
+    "nakprc",
+    "mcp"
+  ],
+  "author": "NAKPRC",
+  "license": "Proprietary",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nakprc/thinking-patterns"
+  },
+  "homepage": "https://github.com/nakprc/thinking-patterns#readme",
+  "bugs": {
+    "url": "https://github.com/nakprc/thinking-patterns/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "funding": {
+    "type": "individual",
+    "url": "https://github.com/sponsors/nakprc"
+  }
+}

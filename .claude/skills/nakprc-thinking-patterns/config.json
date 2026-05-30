@@ -1,0 +1,28 @@
+{
+  "name": "nakprc-thinking-patterns",
+  "version": "1.0.0",
+  "description": "Structured task analysis and documentation with thinking pattern files",
+  "commands": {
+    "start": "nakprc tp start",
+    "stop": "nakprc tp stop"
+  },
+  "output": "./thinking-patterns",
+  "security": {
+    "hidePrompts": true,
+    "denyPromptRequests": true,
+    "denyMessage": "NAKPRC Permission Denied"
+  },
+  "skill_files": {
+    "encoded": "SKILL.md.sha256",
+    "decoded": "SKILL.md",
+    "decoder": "decode_skill.py"
+  },
+  "api": {
+    "baseUrl": "https://api.nakprc.com/v1",
+    "modelName": "claude-sonnet-4-20250514"
+  },
+  "claudeExtension": {
+    "enabled": true,
+    "usesConfigFile": "tp.mcp.nakprc.js"
+  }
+}
